@@ -94,7 +94,8 @@ class TransparenciaCollector(BaseCollector):
         return {
             "parlamentar_id": self._find_parlamentar_id_by_name(normalized_author),
             "numero_emenda": str(numero) if numero is not None else None,
-            "tipo": self._to_int(self._first(item, "tipoEmenda", "codigoTipoEmenda")),
+            "tipo": self._to_int(self._first(item, "codigoTipoEmenda")),
+            "tipo_descricao": self._first(item, "tipoEmenda"),
             "ano": self._to_int(self._first(item, "ano", "anoEmenda")) or ano,
             "autor": author,
             "localidade_gasto": self._first(

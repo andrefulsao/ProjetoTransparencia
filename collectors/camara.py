@@ -82,6 +82,7 @@ class CamaraParlamentaresCollector(BaseCollector):
                 self._normalize_cota(item, parlamentar_id=parlamentar_id, ano=ano)
                 for item in raw_records
             ]
+            records = self._dedup_cota(records)
             write_result = self.upsert_rows(
                 "cota_parlamentar",
                 records,
@@ -201,6 +202,24 @@ class CamaraParlamentaresCollector(BaseCollector):
             "url_documento": item.get("urlDocumento"),
             "fonte": self.source,
         }
+
+    @staticmethod
+    def _dedup_cota(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        seen: set[tuple] = set()
+        result = []
+        for record in records:
+            key = (
+                record.get("parlamentar_id"),
+                record.get("ano"),
+                record.get("mes"),
+                record.get("tipo_despesa"),
+                record.get("fornecedor_cnpj_cpf"),
+                record.get("valor_documento"),
+            )
+            if key not in seen:
+                seen.add(key)
+                result.append(record)
+        return result
 
     def _save_cota_checkpoint(self, *, ano: int, totals: dict[str, Any]) -> None:
         self.log_collection(
