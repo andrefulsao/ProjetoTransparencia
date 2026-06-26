@@ -144,26 +144,79 @@ class TransparenciaCollector(BaseCollector):
                     index[normalized] = row_id
         return index
 
-    async def coletar_contratos(self, ano: int) -> dict[str, int]:
-        """Collect government contracts for one year and persist them."""
+    # Códigos dos órgãos superiores do Poder Executivo Federal (formato codigoOrgao da API)
+    _CODIGOS_ORGAOS_FEDERAIS: list[str] = [
+        "20000",  # Presidência da República
+        "22000",  # Advocacia-Geral da União
+        "24000",  # Ministério da Agricultura, Pecuária e Abastecimento
+        "25000",  # Ministério da Saúde
+        "26000",  # Ministério da Educação
+        "28000",  # Ministério do Trabalho e Emprego
+        "30000",  # Ministério do Exército
+        "32000",  # Ministério da Aeronáutica
+        "33000",  # Ministério da Marinha
+        "36000",  # Ministério da Defesa
+        "37000",  # Ministério da Justiça e Segurança Pública
+        "38000",  # Ministério das Relações Exteriores
+        "39000",  # Ministério da Previdência Social
+        "40000",  # Ministério da Fazenda
+        "41000",  # Ministério dos Transportes
+        "42000",  # Ministério das Comunicações
+        "44000",  # Ministério da Ciência, Tecnologia e Inovação
+        "45000",  # Ministério de Minas e Energia
+        "46000",  # Ministério do Planejamento e Orçamento
+        "47000",  # Ministério do Desenvolvimento, Indústria, Comércio e Serviços
+        "48000",  # Ministério do Meio Ambiente e Mudança do Clima
+        "49000",  # Ministério do Desenvolvimento Agrário e Agricultura Familiar
+        "51000",  # Ministério do Turismo
+        "52000",  # Ministério da Cultura
+        "53000",  # Ministério do Esporte
+        "54000",  # Ministério da Integração e do Desenvolvimento Regional
+        "55000",  # Ministério das Cidades
+        "56000",  # Ministério da Gestão e da Inovação em Serviços Públicos
+        "57000",  # Ministério do Desenvolvimento e Assistência Social, Família e Combate à Fome
+        "58000",  # Ministério da Igualdade Racial
+        "59000",  # Ministério dos Povos Indígenas
+        "60000",  # Ministério das Mulheres
+        "61000",  # Ministério de Portos e Aeroportos
+        "62000",  # Ministério da Pesca e Aquicultura
+    ]
+
+    def _listar_codigos_orgaos(self) -> list[str]:
+        return self._CODIGOS_ORGAOS_FEDERAIS
+
+    async def coletar_contratos(self, ano: int, codigo_orgao: str | None = None) -> dict[str, int]:
+        """Collect government contracts for one year, iterating over all organs if none given."""
         started_at = time.monotonic()
         status = "sucesso"
         error = None
         records: list[dict[str, Any]] = []
         write_result = {"inserted": 0, "updated": 0}
-        params = {"ano": ano}
-        api_params = {"dataInicial": f"01/01/{ano}", "dataFinal": f"31/12/{ano}"}
+        params: dict[str, Any] = {"ano": ano}
 
         try:
-            raw_records = await self.collect_paginated(
-                "contratos",
-                params=api_params,
-                page_param="pagina",
-                page_size_param="tamanhoPagina",
-                page_size=500,
-                data_key="dados",
-            )
-            records = [self._normalize_contrato(item) for item in raw_records]
+            codigos = [codigo_orgao] if codigo_orgao else self._listar_codigos_orgaos()
+            self.logger.info("contratos_orgaos", total=len(codigos))
+
+            for codigo in codigos:
+                api_params: dict[str, Any] = {
+                    "dataInicial": f"01/01/{ano}",
+                    "dataFinal": f"31/12/{ano}",
+                    "codigoOrgao": codigo,
+                }
+                try:
+                    raw = await self.collect_paginated(
+                        "contratos",
+                        params=api_params,
+                        page_param="pagina",
+                        page_size_param="tamanhoPagina",
+                        page_size=500,
+                        data_key="dados",
+                    )
+                    records.extend(self._normalize_contrato(item) for item in raw)
+                except Exception:
+                    self.logger.warning("contratos_orgao_failed", codigo_orgao=codigo)
+
             write_result = self.upsert_rows(
                 "contratos",
                 records,
@@ -198,12 +251,13 @@ class TransparenciaCollector(BaseCollector):
         orgao = item.get("unidadeGestora") or {}
         if not isinstance(orgao, dict):
             orgao = {}
-        orgao_superior = item.get("orgaoSuperior") or {}
+        orgao_superior = orgao.get("orgaoMaximo") or {}
         if not isinstance(orgao_superior, dict):
             orgao_superior = {}
 
         cnpj_raw = (
-            fornecedor.get("cnpj")
+            fornecedor.get("cnpjFormatado")
+            or fornecedor.get("cnpj")
             or fornecedor.get("cpfCnpj")
             or self._first(item, "cnpjFornecedor", "cpfCnpjFornecedor")
         )
@@ -226,10 +280,10 @@ class TransparenciaCollector(BaseCollector):
             "fornecedor_cnpj": normalize_cnpj(cnpj_raw),
             "objeto": self._first(item, "objeto", "descricaoObjeto"),
             "valor_inicial": self._decimal_text(
-                self._first(item, "valorInicial", "valor", "valorContrato")
+                self._first(item, "valorInicialCompra", "valorInicial", "valor", "valorContrato")
             ),
             "valor_final": self._decimal_text(
-                self._first(item, "valorFinal", "valorAtual", "valorTotal")
+                self._first(item, "valorFinalCompra", "valorFinal", "valorAtual", "valorTotal")
             ),
             "data_inicio": self._parse_date(
                 self._first(item, "dataVigenciaInicio", "dataInicioVigencia", "dataInicio")
@@ -237,7 +291,7 @@ class TransparenciaCollector(BaseCollector):
             "data_fim": self._parse_date(
                 self._first(item, "dataVigenciaFim", "dataFimVigencia", "dataFim", "dataTermino")
             ),
-            "situacao": self._first(item, "situacao", "status"),
+            "situacao": self._first(item, "situacaoContrato", "situacao", "status"),
             "modalidade_licitacao": self._first(
                 item, "modalidadeCompra", "modalidade", "modalidadeLicitacao"
             ),
@@ -302,7 +356,7 @@ class TransparenciaCollector(BaseCollector):
         cnpj_raw = (
             vencedor.get("cnpj")
             or vencedor.get("cpfCnpj")
-            or self._first(item, "cnpjFornecedor", "cnpjVencedor")
+            or self._first(item, "cnpjFormatado", "cnpjFornecedor", "cnpjVencedor")
         )
         return {
             "numero": self._first(item, "numero", "id", "codigoLicitacao"),

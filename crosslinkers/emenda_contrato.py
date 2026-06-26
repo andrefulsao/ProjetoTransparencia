@@ -50,10 +50,13 @@ class EmendaContratoLinker:
             valor_por_cnpj: dict[str, Decimal] = {}
 
             for emenda in emendas:
-                cnpjs = self._extract_cnpjs(emenda.get("raw_data"))
                 emenda_matched = False
                 valor_pago = self._to_decimal(emenda.get("valor_pago")) or Decimal("0")
+                raw = emenda.get("raw_data") or {}
+                keywords = self._keywords_from_funcao(raw.get("funcao"), raw.get("subfuncao"))
 
+                # Tenta CNPJ primeiro (alta confiança)
+                cnpjs = self._extract_cnpjs(raw)
                 for cnpj in cnpjs:
                     for contrato in contratos_por_cnpj.get(cnpj, []):
                         if not self._vigencia_compativel(contrato, ano):
@@ -73,6 +76,31 @@ class EmendaContratoLinker:
                         valor_por_cnpj[cnpj] = (
                             valor_por_cnpj.get(cnpj, Decimal("0")) + valor_pago
                         )
+
+                # Fallback: match por funcao/subfuncao no objeto do contrato
+                if not emenda_matched and keywords:
+                    for contrato in contratos:
+                        if not self._vigencia_compativel(contrato, ano):
+                            continue
+                        if not self._objeto_contem_keywords(contrato.get("objeto"), keywords):
+                            continue
+                        key = (emenda["id"], contrato["id"])
+                        if key in seen_keys:
+                            continue
+                        seen_keys.add(key)
+                        links.append({
+                            "emenda_id": emenda["id"],
+                            "contrato_id": contrato["id"],
+                            "tipo_vinculo": "funcao_objeto",
+                            "confianca": 0.3,
+                        })
+                        contratos_ids.add(contrato["id"])
+                        emenda_matched = True
+                        cnpj = contrato.get("fornecedor_cnpj", "")
+                        if cnpj:
+                            valor_por_cnpj[cnpj] = (
+                                valor_por_cnpj.get(cnpj, Decimal("0")) + valor_pago
+                            )
 
                 if emenda_matched and emenda["id"] not in emendas_com_match:
                     emendas_com_match.add(emenda["id"])
@@ -128,7 +156,7 @@ class EmendaContratoLinker:
     def _load_contratos(self) -> list[dict[str, Any]]:
         return self.db.select(
             "contratos",
-            columns="id,fornecedor_cnpj,data_inicio,data_fim",
+            columns="id,fornecedor_cnpj,data_inicio,data_fim,objeto",
         )
 
     @staticmethod
@@ -180,6 +208,29 @@ class EmendaContratoLinker:
                             cnpjs.add(normalized)
 
         return cnpjs
+
+    @staticmethod
+    def _keywords_from_funcao(funcao: Any, subfuncao: Any = None) -> set[str]:
+        """Extract normalized keywords from funcao/subfuncao fields."""
+        stop = {"de", "da", "do", "das", "dos", "e", "a", "o", "em", "para", "com"}
+        words: set[str] = set()
+        for text in (funcao, subfuncao):
+            if not isinstance(text, str):
+                continue
+            for word in text.lower().split():
+                word = word.strip(".,;:()")
+                if len(word) >= 4 and word not in stop:
+                    words.add(word)
+        return words
+
+    @staticmethod
+    def _objeto_contem_keywords(objeto: Any, keywords: set[str]) -> bool:
+        """Return True if the contract objeto contains at least 2 of the keywords."""
+        if not isinstance(objeto, str) or not keywords:
+            return False
+        objeto_lower = objeto.lower()
+        hits = sum(1 for kw in keywords if kw in objeto_lower)
+        return hits >= 2
 
     @staticmethod
     def _to_decimal(value: Any) -> Decimal | None:

@@ -43,10 +43,10 @@ async def _collect_emendas(ano: int) -> dict[str, int]:
         return await collector.coletar_emendas(ano=ano)
 
 
-async def _collect_contratos(ano: int) -> dict[str, int]:
+async def _collect_contratos(ano: int, codigo_orgao: str | None = None) -> dict[str, int]:
     db = Database()
     async with TransparenciaCollector(db=db) as collector:
-        return await collector.coletar_contratos(ano=ano)
+        return await collector.coletar_contratos(ano=ano, codigo_orgao=codigo_orgao)
 
 
 async def _collect_licitacoes(ano: int) -> dict[str, int]:
@@ -107,10 +107,11 @@ def coletar_emendas(
 @coletar_app.command("contratos")
 def coletar_contratos(
     ano: Annotated[int, typer.Option("--ano", "-a", help="Ano dos contratos.")],
+    codigo_orgao: Annotated[str | None, typer.Option("--orgao", "-o", help="Código do órgão.")] = None,
 ) -> None:
     """Collect government contracts from Portal da Transparencia."""
     configure_logging(settings.log_level)
-    result = asyncio.run(_collect_contratos(ano=ano))
+    result = asyncio.run(_collect_contratos(ano=ano, codigo_orgao=codigo_orgao))
     typer.echo(
         "Contratos {ano}: coletados={coletados}, upserts={inseridos}".format(
             ano=ano, **result
